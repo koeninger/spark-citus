@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Title</title>
+    <meta charset="utf-8">
+    <style>
+      @import url(https://fonts.googleapis.com/css?family=Yanone+Kaffeesatz);
+      @import url(https://fonts.googleapis.com/css?family=Droid+Serif:400,700,400italic);
+      @import url(https://fonts.googleapis.com/css?family=Ubuntu+Mono:400,700,400italic);
+
+      body { font-family: 'Droid Serif'; }
+      h1, h2, h3 {
+      font-family: 'Yanone Kaffeesatz';
+      font-weight: normal;
+      }
+            img {
+        width: 100%;
+        height: auto;
+      }
+      img#kixer-logo {
+        width: 130px;
+        height: 54px;
+      }
+      ul, ol {
+        margin: 6px 0 6px 0;  
+      }
+      li {
+        margin: 0 0 12px 0;  
+      }
+      .remark-code, .remark-inline-code { font-family: 'Ubuntu Mono'; }
+    </style>
+  </head>
+  <body>
+    <textarea id="source">
+
+class: center, middle
+
+# Horizontally Scalable Relational Databases with Spark
+
+cody@koeninger.org
+
+<image src="slides/kixer-logo.png" id="kixer-logo" />
+
+---
+
+# What is Citus?
+
+* Standard Postgres
+* Add sharding across multiple nodes
+* CREATE EXTENSION citus; -- not a fork of the codebase
+* Good for live analytics, multi-tenant
+* Open source, commercial support
+
+---
+
+# Fill in the ???
+
+1. Shove your data into Kafka
+2. Munge it with Spark
+3. ???
+4. Profit!
+
+---
+
+# Spark + HDFS pain points
+
+* Multi-user
+* Query latency
+* Mutable rows
+* Co-located related writes
+
+---
+
+# Relational database pain points
+
+* "Schemaless" data
+* Scaling out, without giving up
+    * Aggregations
+    * Joins
+    * Transactions
+
+---
+
+# "Schemaless" data
+
+```sql
+master# create table no_schema (data JSONB);
+master# create index on no_schema using gin(data);
+master# insert into no_schema values
+ ('{"user":"cody","cart":["apples","peanut_butter"]}'),
+ ('{"user":"jake","cart":["whiskey"],"drunk":true}'),
+ ('{"user":"omar","cart":["fireball"],"drunk":true}');
+master# select data->'user' from no_schema where data->'drunk' = 'true';
+?column?
+----------
+"jake"
+"omar"
+(2 rows)
+```
+
+---
+# Scaling out
+
+diagram of master / worker
+
+---
+
+# Choosing a distribution key
+
+* Commonly queried column (e.g. customer id)
+  * 1 master query : 1 worker query
+  * easy join on distribution key
+  * possible hot spots if load is skewed
+* Evenly distributed column (e.g. event GUID)
+  * 1 master query : # of shards worker queries
+  * hard to join
+  * no hot spots
+* Can duplicate table with different distribution key if needed
+
+---
+
+# Creating distributed tables
+
+```sql
+master# create table impressions(
+  date date, ad_id integer, site_id integer, total integer);
+master# set citus.shard_replication_factor = 1;
+master# set citus.shard_count = 4;
+master# select create_distributed_table('impressions', 'ad_id', 'hash');
+master# select * from pg_dist_shard;
+logicalrelid | shardid | shardminvalue | shardmaxvalue
+--------------+---------+---------------+---------------
+impressions  |  102008 | -2147483648   | -1073741825
+impressions  |  102009 | -1073741824   | -1
+impressions  |  102010 | 0             | 1073741823
+impressions  |  102011 | 1073741824    | 2147483647
+```
+```sql
+worker1# \d
+List of relations
+Schema |        Name        | Type  | Owner
+--------+--------------------+-------+-------
+public | impressions_102008 | table | cody
+public | impressions_102010 | table | cody
+```
+
+---
+
+# Writing data
+
+
+```sql
+master# insert into impressions values (now(), 23, 42, 1337);
+master# update impressions set total = total + 1
+  where ad_id = 23 and site_id = 42;
+master# \copy impressions from '/var/tmp/bogus_impressions';
+```
+
+Can also write directly to worker shards, as long as you hash correctly.
+
+---
+
+# Aggregations
+
+Commutative and associative operations "just work":
+```sql
+master# select site_id, avg(total)
+ from impressions group by 1 order by 2 desc limit 1;
+site_id |         avg
+---------+---------------------
+5225 | 790503.061538461538
+(1 row)
+```
+
+In worker1's log:
+```sql
+COPY (SELECT site_id, sum(total) AS avg, count(total) AS avg
+ FROM impressions_102010 impressions WHERE true GROUP BY site_id) TO STDOUT
+COPY (SELECT site_id, sum(total) AS avg, count(total) AS avg
+ FROM impressions_102008 impressions WHERE true GROUP BY site_id) TO STDOUT
+```
+For other operations, can usually query a subset of data to temp table on master, then use arbitrary sql.
+
+---
+
+# Joins
+
+Co-located joins of tables with same distribution column work well
+```sql
+master# create table clicks(
+  date date, ad_id integer, site_id integer, price numeric, total integer);
+master# select create_distributed_table('clicks', 'ad_id', 'hash');
+master# select i.ad_id, sum(c.total) / sum(i.total)::float from impressions i
+  inner join clicks c on i.ad_id = c.ad_id and i.date = c.date
+  and i.site_id = c.site_id group by 1 order by 2 desc limit 1;
+ad_id | ?column?
+-------+----------
+814 |      0.1
+```
+
+Joins of regular master tables to distributed tables won't work
+```sql
+master# create table discounts(date date, amt numeric);
+master# select c.ad_id, max(c.price * d.amt) from clicks c
+  inner join discounts d on c.date = d.date group by 1 order by 2 desc limit 1;
+ERROR:  cannot plan queries that include both regular and partitioned relations
+```
+
+---
+
+Distributed joins on non-distribution column will work, but are slow
+```sql
+master# select create_distributed_table('discounts', 'date', 'hash');
+master# select c.ad_id, max(c.price * d.amt) from clicks c inner join discounts d on c.date = d.date group by 1 order by 2 desc limit 1;
+ERROR:  cannot use real time executor with repartition jobs
+HINT:  Set citus.task_executor_type to "task-tracker".
+master# SET citus.task_executor_type = 'task-tracker';
+master# select c.ad_id, max(c.price * d.amt) from clicks c inner join discounts d on c.date = d.date group by 1 order by 2 desc limit 1;
+ad_id |                max
+-------+-----------------------------------
+587 | 67.887149187736200000000000000000
+(1 row)
+
+Time: 3464.598 ms
+```
+
+Replicating the join table on every worker is faster
+```sql
+master# SET citus.shard_replication_factor = 2;  -- equal to number of nodes
+master# select create_reference_table('discounts2');
+master# select c.ad_id, max(c.price * d.amt) from clicks c inner join discounts2 d on c.date = d.date group by 1 order by 2 desc limit 1;
+ad_id |                max
+-------+-----------------------------------
+587 | 67.887149187736200000000000000000
+(1 row)
+
+Time: 31.237 ms
+```
+
+---
+
+# Transactions
+
+* No global transactions (Postgres-XL).
+* Individual worker transactions are still extremely useful:
+  * If sharded by customer, each customer sees consistent world.
+  * Spark output actions are at-least-once.
+      * Transactions allow consistent semantics for failures
+      * Even for non-idempotent updates
+
+    </textarea>
+    <script src="slides/remark-latest.min.js">
+    </script>
+    <script>
+      var slideshow = remark.create();
+    </script>
+  </body>
+</html>
