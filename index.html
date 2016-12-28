@@ -248,6 +248,106 @@ Time: 31.237 ms
       * Transactions allow consistent semantics for failures
       * Even for non-idempotent updates
 
+---
+
+# Transactional writes from Spark to Citus
+
+* Partition Spark results to match Citus shards
+* Table of offset ranges (or batch ids) on each worker
+  * has a record for each shard
+* Foreach partition, start transaction on corresponding worker
+  * write results, can be insert and / or update
+  * update offsets table row for that shard
+  * roll back if offsets weren't as expected
+* On failure,
+  * begin from minimum offset range across all workers
+  * recalculate all results for that range (due to shuffle)
+  * skip writes for shards that already have that range
+
+---
+
+# Spark custom partitioner
+
+* Citus uses Postgres hash (**hashfunc.c**) based on Jenkins' 2006 hash
+* Min / max hash values for a given shard are in **pg_dist_shard** table
+* Worker nodes for a given shard are in **pg_dist_shard_placement** table
+* Need overridden Spark method getPartition for a given key, but also a method to get the correct worker host for a given partition
+* Idea is to query once at partitioner creation time, build a lookup table from hash bucket to shard placement
+
+---
+
+```sql
+select
+(ds.logicalrelid::regclass)::varchar as tablename,
+ds.shardmaxvalue::integer as hmax,
+ds.shardid::integer,
+p.nodename::varchar,
+p.nodeport::integer
+from pg_dist_shard ds
+left join pg_dist_shard_placement p on ds.shardid = p.shardid
+where (ds.logicalrelid::regclass)::varchar in ('impressions')
+order by tablename, hmax asc;
+
+tablename  |    hmax     | shardid | nodename  | nodeport
+-------------+-------------+---------+-----------+----------
+impressions | -1073741825 |  102008 | host1    |     9701
+impressions |          -1 |  102009 | host2    |     9702
+impressions |  1073741823 |  102010 | host1    |     9701
+impressions |  2147483647 |  102011 | host2    |     9702
+```
+
+* Hash the key using jenkins
+* Look down the list until you find an hmax >= your hashed value
+
+---
+
+# Example offsets table
+
+Using Kafka offsets as opposed to Structured Streaming batch ids:
+
+```sql
+job  |    topic    | part |  shard_table_name  |   off
+-------+-------------+------+--------------------+---------
+myjob | impressions |    0 | impressions_102008 | 20000
+myjob | impressions |    0 | impressions_102009 | 20000
+myjob | impressions |    0 | impressions_102010 | 19000  -- behind
+myjob | impressions |    0 | impressions_102011 | 20000
+myjob | impressions |    1 | impressions_102008 | 20001
+myjob | impressions |    1 | impressions_102009 | 20001
+myjob | impressions |    1 | impressions_102010 | 18000  -- behind
+myjob | impressions |    1 | impressions_102011 | 20001
+```
+
+* In this case, a failure occurred before writes to **impressions_102010** finished, because its offsets are behind the others
+* The job restarts from (partition 0 offsets 19000 -> 20000, partition 1 offsets 18000 -> 20001)
+* Writes to **impressions_102010** succeed, other shards are skipped
+
+---
+
+# General lessons learned
+
+* Be conservative with changing anything else when moving to sharding
+* PgBouncer is necessary in front of workers, not just master
+  * especially if you have queries that hit all shards
+* Some cognitive overhead about which sql features work
+  * but better than systems that layer sql on a totally different data model
+* Would be nice to have hash distribution on top of date-partitioned tables
+  * most of our queries involve date ranges
+  * drop table for expiring data retention rather than delete / vacuum
+  * can be done manually, easy way may be coming with Postgres 10
+
+---
+
+class: center, middle
+
+# Questions?
+
+cody@koeninger.org
+
+<image src="slides/kixer-logo.png" id="kixer-logo" />
+
+https://github.com/koeninger/spark-citus
+
     </textarea>
     <script src="slides/remark-latest.min.js">
     </script>
