@@ -46,14 +46,14 @@ cody@koeninger.org
 # What is Citus?
 
 * Standard Postgres
-* Add sharding across multiple nodes
+* Sharded across multiple nodes
 * CREATE EXTENSION citus; -- not a fork of the codebase
 * Good for live analytics, multi-tenant
 * Open source, commercial support
 
 ---
 
-# Fill in the ???
+# Where does Citus fit with Spark?
 
 1. Shove your data into Kafka
 2. Munge it with Spark
@@ -179,7 +179,7 @@ COPY (SELECT site_id, sum(total) AS avg, count(total) AS avg
 COPY (SELECT site_id, sum(total) AS avg, count(total) AS avg
  FROM impressions_102008 impressions WHERE true GROUP BY site_id) TO STDOUT
 ```
-For other operations, can usually query a subset of data to temp table on master, then use arbitrary sql.
+For other operations, can usually query a subset of data to temp table on master, then use arbitrary SQL.
 
 ---
 
@@ -257,7 +257,7 @@ Time: 31.237 ms
   * has a record for each shard
 * Foreach partition, start transaction on corresponding worker
   * write results, can be insert and / or update
-  * update offsets table row for that shard
+  * update offsets table rows for that shard
   * roll back if offsets weren't as expected
 * On failure,
   * begin from minimum offset range across all workers
@@ -268,10 +268,17 @@ Time: 31.237 ms
 
 # Spark custom partitioner
 
+```scala
+/** same number of Spark partitions as Citus shards */
+override def numPartitions: Int
+/** given a key, which Spark partition */
+override def getPartition(key: Any): Int
+/** given a Spark partition, which worker shard */
+def shardPlacement(partitionId: Int): ShardPlacement
+```
 * Citus uses Postgres hash (**hashfunc.c**) based on Jenkins' 2006 hash
 * Min / max hash values for a given shard are in **pg_dist_shard** table
 * Worker nodes for a given shard are in **pg_dist_shard_placement** table
-* Need overridden Spark method getPartition for a given key, but also a method to get the correct worker host for a given partition
 * Idea is to query once at partitioner creation time, build a lookup table from hash bucket to shard placement
 
 ---
@@ -296,8 +303,8 @@ impressions |  1073741823 |  102010 | host1    |     9701
 impressions |  2147483647 |  102011 | host2    |     9702
 ```
 
-* Hash the key using jenkins
-* Look down the list until you find an hmax >= your hashed value
+* To find partition, hash key w/Jenkins, walk array until hmax >= hashed
+* To find worker shard for a partition, index directly by partition #
 
 ---
 
@@ -319,18 +326,20 @@ myjob | impressions |    1 | impressions_102011 | 20001
 ```
 
 * In this case, a failure occurred before writes to **impressions_102010** finished, because its offsets are behind the others
-* The job restarts from (partition 0 offsets 19000 -> 20000, partition 1 offsets 18000 -> 20001)
+* The job restarts from Kafka offset ranges
+  * partition 0 offsets 19000 -> 20000
+  * partition 1 offsets 18000 -> 20001
 * Writes to **impressions_102010** succeed, other shards are skipped
 
 ---
 
 # General lessons learned
 
-* Be conservative with changing anything else when moving to sharding
+* Be conservative with changing anything else when moving to sharded DB
 * PgBouncer is necessary in front of workers, not just master
   * especially if you have queries that hit all shards
-* Some cognitive overhead about which sql features work
-  * but better than systems that layer sql on a totally different data model
+* Some cognitive overhead about which SQL features work
+  * but better than systems that layer SQL on a totally different data model
 * Would be nice to have hash distribution on top of date-partitioned tables
   * most of our queries involve date ranges
   * drop table for expiring data retention rather than delete / vacuum
