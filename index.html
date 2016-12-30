@@ -91,6 +91,7 @@ master# insert into no_schema values
  ('{"user":"jake","cart":["whiskey"],"drunk":true}'),
  ('{"user":"omar","cart":["fireball"],"drunk":true}');
 master# select data->'user' from no_schema where data->'drunk' = 'true';
+
 ?column?
 ----------
 "jake"
@@ -151,6 +152,7 @@ master# set citus.shard_replication_factor = 1;
 master# set citus.shard_count = 4;
 master# select create_distributed_table('impressions', 'ad_id', 'hash');
 master# select * from pg_dist_shard;
+
 logicalrelid | shardid | shardminvalue | shardmaxvalue
 --------------+---------+---------------+---------------
 impressions  |  102008 | -2147483648   | -1073741825
@@ -179,7 +181,7 @@ master# update impressions set total = total + 1
 master# \copy impressions from '/var/tmp/bogus_impressions';
 ```
 
-Can also write directly to worker shards, as long as you hash correctly.
+Can also write directly to worker shards, as long as you hash correctly
 
 ---
 
@@ -189,6 +191,7 @@ Commutative and associative operations "just work":
 ```sql
 master# select site_id, avg(total)
  from impressions group by 1 order by 2 desc limit 1;
+
 site_id |         avg
 ---------+---------------------
 5225 | 790503.061538461538
@@ -202,7 +205,7 @@ COPY (SELECT site_id, sum(total) AS avg, count(total) AS avg
 COPY (SELECT site_id, sum(total) AS avg, count(total) AS avg
  FROM impressions_102008 impressions WHERE true GROUP BY site_id) TO STDOUT
 ```
-For other operations, can usually query a subset of data to temp table on master, then use arbitrary SQL.
+For other operations, can usually query a subset of data to temp table on master, then use arbitrary SQL
 
 ---
 
@@ -213,10 +216,12 @@ Co-located joins of tables with same distribution column work well
 master# create table clicks(
   date date, ad_id integer, site_id integer, price numeric, total integer);
 master# select create_distributed_table('clicks', 'ad_id', 'hash');
-master# select i.ad_id, sum(c.total) / sum(i.total)::float from impressions i
+master# select i.ad_id, sum(c.total) / sum(i.total)::float as clickthrough
+  from impressions i
   inner join clicks c on i.ad_id = c.ad_id and i.date = c.date
   and i.site_id = c.site_id group by 1 order by 2 desc limit 1;
-ad_id | ?column?
+
+ad_id | clickthrough
 -------+----------
 814 |      0.1
 ```
@@ -239,6 +244,7 @@ ERROR:  cannot use real time executor with repartition jobs
 HINT:  Set citus.task_executor_type to "task-tracker".
 master# SET citus.task_executor_type = 'task-tracker';
 master# select c.ad_id, max(c.price * d.amt) from clicks c inner join discounts d on c.date = d.date group by 1 order by 2 desc limit 1;
+
 ad_id |                max
 -------+-----------------------------------
 587 | 67.887149187736200000000000000000
@@ -252,6 +258,7 @@ Replicating the join table on every worker is faster
 master# SET citus.shard_replication_factor = 2;  -- equal to number of nodes
 master# select create_reference_table('discounts2');
 master# select c.ad_id, max(c.price * d.amt) from clicks c inner join discounts2 d on c.date = d.date group by 1 order by 2 desc limit 1;
+
 ad_id |                max
 -------+-----------------------------------
 587 | 67.887149187736200000000000000000
@@ -264,10 +271,10 @@ Time: 31.237 ms
 
 # Transactions
 
-* No global transactions (Postgres-XL).
+* No global transactions (Postgres-XL)
 * Individual worker transactions are still extremely useful:
-  * If sharded by customer, each customer sees consistent world.
-  * Spark output actions are at-least-once.
+  * If sharded by customer id, each customer sees consistent world
+  * Spark output actions are at-least-once
       * Transactions allow consistent semantics for failures
       * Even for non-idempotent updates
 
