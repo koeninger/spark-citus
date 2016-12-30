@@ -99,9 +99,32 @@ master# select data->'user' from no_schema where data->'drunk' = 'true';
 ```
 
 ---
+
 # Scaling out
 
-diagram of master / worker
+```
+                                                                    +--------------+
+                                           SELECT FROM table_1001   |              |
+                                        +-------------------------> |  Worker 1    |
+                                        |                           |              |
+                                        |                           |  table_1001  |
+                                        |  SELECT FROM table_1003   |  table_1003  |
+                      +------------+    +-------------------------> |              |
+                      |            |    |                           |              |
+                      |  Master    |    |                           +--------------+
+  SELECT FROM table   |            |    |
++-------------------> |  table     | ---+
+                      |  metadata  |    |                           +--------------+
+                      |            |    |  SELECT FROM table_1002   |              |
+                      |            |    +-------------------------> |  Worker 2    |
+                      +------------+    |                           |              |
+                                        |                           |  table_1002  |
+                                        |  SELECT FROM table_1004   |  table_1004  |
+                                        +-------------------------> |              |
+                                                                    |              |
+                                                                    +--------------+
+
+```
 
 ---
 
