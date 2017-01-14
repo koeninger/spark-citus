@@ -309,7 +309,7 @@ def shardPlacement(partitionId: Int): ShardPlacement
 * Citus uses Postgres hash (**hashfunc.c**) based on Jenkins' 2006 hash
 * Min / max hash values for a given shard are in **pg_dist_shard** table
 * Worker nodes for a given shard are in **pg_dist_shard_placement** table
-* Idea is to query once at partitioner creation time, build a lookup table from hash bucket to shard placement
+* Idea is to query once at partitioner creation time, build a lookup array from hash bucket to shard placement
 
 ---
 
