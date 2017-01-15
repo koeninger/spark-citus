@@ -59,15 +59,27 @@ cody@koeninger.org
 2. Munge it with Spark
 3. ???
 4. Profit!
+---
+
+# Where does Citus fit with Spark?
+
+1. Shove your data into Kafka
+2. Munge it with Spark
+3. Serve live traffic using
+  * ML models
+  * Key / Value stores
+  * ? Spark SQL ?
+  * ? Single node database ?
+4. Profit!
 
 ---
 
-# Spark + HDFS pain points
+# Spark SQL + HDFS pain points
 
 * Multi-user
 * Query latency
 * Mutable rows
-* Co-located related writes
+* Co-locating related writes for joins
 
 ---
 
@@ -84,7 +96,8 @@ cody@koeninger.org
 # "Schemaless" data
 
 ```sql
-master# create table no_schema (data JSONB);
+master# create table no_schema (
+  data JSONB);
 master# create index on no_schema using gin(data);
 master# insert into no_schema values
  ('{"user":"cody","cart":["apples","peanut_butter"]}'),
@@ -147,10 +160,17 @@ master# select data->'user' from no_schema where data->'drunk' = 'true';
 
 ```sql
 master# create table impressions(
-  date date, ad_id integer, site_id integer, total integer);
+  date date,
+  ad_id integer,
+  site_id integer,
+  total integer);
 master# set citus.shard_replication_factor = 1;
 master# set citus.shard_count = 4;
 master# select create_distributed_table('impressions', 'ad_id', 'hash');
+```
+---
+Metadata in master tables
+```sql                                                                  
 master# select * from pg_dist_shard;
 
 logicalrelid | shardid | shardminvalue | shardmaxvalue
@@ -160,6 +180,7 @@ impressions  |  102009 | -1073741824   | -1
 impressions  |  102010 | 0             | 1073741823
 impressions  |  102011 | 1073741824    | 2147483647
 ```
+Data in worker shard tables
 ```sql
 worker1# \d
 List of relations
@@ -214,7 +235,11 @@ For other operations, can usually query a subset of data to temp table on master
 Co-located joins of tables with same distribution column work well
 ```sql
 master# create table clicks(
-  date date, ad_id integer, site_id integer, price numeric, total integer);
+  date date,
+  ad_id integer,
+  site_id integer,
+  price numeric,
+  total integer);
 master# select create_distributed_table('clicks', 'ad_id', 'hash');
 master# select i.ad_id, sum(c.total) / sum(i.total)::float as clickthrough
   from impressions i
@@ -225,23 +250,19 @@ ad_id | clickthrough
 -------+----------
 814 |      0.1
 ```
-
-Joins of regular master tables to distributed tables won't work
-```sql
-master# create table discounts(date date, amt numeric);
-master# select c.ad_id, max(c.price * d.amt) from clicks c
-  inner join discounts d on c.date = d.date group by 1 order by 2 desc limit 1;
-ERROR:  cannot plan queries that include both regular and partitioned relations
-```
-
 ---
 
 Distributed joins on non-distribution column will work, but are slow
 ```sql
+master# create table discounts(
+  date date,
+  amt numeric);
 master# select create_distributed_table('discounts', 'date', 'hash');
-master# select c.ad_id, max(c.price * d.amt) from clicks c inner join discounts d on c.date = d.date group by 1 order by 2 desc limit 1;
+master# select c.ad_id, max(c.price * d.amt) from clicks c
+ inner join discounts d on c.date = d.date group by 1 order by 2 desc limit 1;
 ERROR:  cannot use real time executor with repartition jobs
 HINT:  Set citus.task_executor_type to "task-tracker".
+
 master# SET citus.task_executor_type = 'task-tracker';
 master# select c.ad_id, max(c.price * d.amt) from clicks c inner join discounts d on c.date = d.date group by 1 order by 2 desc limit 1;
 
@@ -252,13 +273,14 @@ ad_id |                max
 
 Time: 3464.598 ms
 ```
+---
 
 Replicating the join table on every worker is faster
 ```sql
 master# SET citus.shard_replication_factor = 2;  -- equal to number of nodes
 master# select create_reference_table('discounts2');
-master# select c.ad_id, max(c.price * d.amt) from clicks c inner join discounts2 d on c.date = d.date group by 1 order by 2 desc limit 1;
-
+master# select c.ad_id, max(c.price * d.amt) from clicks c
+ inner join discounts2 d on c.date = d.date group by 1 order by 2 desc limit 1;
 ad_id |                max
 -------+-----------------------------------
 587 | 67.887149187736200000000000000000
@@ -279,20 +301,31 @@ Time: 31.237 ms
       * Even for non-idempotent updates
 
 ---
+# Transactional writes from Spark to single DB
 
+* Table of offset ranges (or batch ids)
+* Foreach partition, start transaction on DB
+  * insert or update results
+  * update offsets table rows
+  * roll back if offsets weren't as expected
+* On failure,
+  * begin from minimum offset range
+  * recalculate all results for that range (due to shuffle)
+
+---
+                                                                  
 # Transactional writes from Spark to Citus
 
-* Partition Spark results to match Citus shards
-* Table of offset ranges (or batch ids) on each worker
-  * has a record for each shard
-* Foreach partition, start transaction on corresponding worker
-  * write results, can be insert and / or update
-  * update offsets table rows for that shard
+* **Partition Spark results to match Citus shards**
+* Table of offset ranges (or batch ids) **on each worker**
+* Foreach partition, start transaction **on corresponding worker**
+  * insert or update results
+  * update offsets table rows **for that shard**
   * roll back if offsets weren't as expected
 * On failure,
   * begin from minimum offset range across all workers
   * recalculate all results for that range (due to shuffle)
-  * skip writes for shards that already have that range
+  * **skip writes for shards that already have that offset range**
 
 ---
 
@@ -335,41 +368,47 @@ impressions |  2147483647 |  102011 | host2    |     9702
 
 * To find partition, hash key w/Jenkins, walk array until hmax >= hashed
 * To find worker shard for a partition, index directly by partition #
-
+* See github link at end of slides for working code
+                                                                  
 ---
 
 # Example offsets table
 
-Using Kafka offsets as opposed to Structured Streaming batch ids:
-
 ```sql
-job  |    topic    | part |  shard_table_name  |   off
+app  |    topic    | part |  shard_table_name  |   off
 -------+-------------+------+--------------------+---------
-myjob | impressions |    0 | impressions_102008 | 20000
-myjob | impressions |    0 | impressions_102009 | 20000
-myjob | impressions |    0 | impressions_102010 | 19000  -- behind
-myjob | impressions |    0 | impressions_102011 | 20000
-myjob | impressions |    1 | impressions_102008 | 20001
-myjob | impressions |    1 | impressions_102009 | 20001
-myjob | impressions |    1 | impressions_102010 | 18000  -- behind
-myjob | impressions |    1 | impressions_102011 | 20001
+myapp | impressions |    0 | impressions_102008 | 20000
+myapp | impressions |    0 | impressions_102009 | 20000
+myapp | impressions |    0 | impressions_102010 | 19000  -- behind
+myapp | impressions |    0 | impressions_102011 | 20000
+myapp | impressions |    1 | impressions_102008 | 20001
+myapp | impressions |    1 | impressions_102009 | 20001
+myapp | impressions |    1 | impressions_102010 | 18000  -- behind
+myapp | impressions |    1 | impressions_102011 | 20001
 ```
 
 * In this case, a failure occurred before writes to **impressions_102010** finished, because its offsets are behind the others
-* The job restarts from Kafka offset ranges
+* Restart Spark app from Kafka offset ranges
   * partition 0 offsets 19000 -> 20000
   * partition 1 offsets 18000 -> 20001
 * Writes to **impressions_102010** succeed, other shards are skipped
 
 ---
+# Lies, damn lies, and bar charts
+<image src="slides/writes.png" />
+---
+# Lies, damn lies, and bar charts
 
+<image src="slides/reads.png" />                                                                  
+---
+                                                                  
 # General lessons learned
 
 * Be conservative with changing anything else when moving to sharded DB
 * PgBouncer is necessary in front of workers, not just master
   * especially if you have queries that hit all shards
 * Some cognitive overhead about which SQL features work
-  * but better than systems that layer SQL on a totally different data model
+  * still better than layering SQL on a totally different data model
 * Would be nice to have hash distribution on top of date-partitioned tables
   * most of our queries involve date ranges
   * drop table for expiring data retention rather than delete / vacuum
