@@ -64,8 +64,8 @@ class CitusPartitioner(placements: Array[ShardPlacement]) extends Partitioner {
     (tables, buckets)
   }
 
-  /** jdbc worker hosts, assumes ports aren't interesting */
-  val jdbcWorkerHosts: Set[String] = placements.map(_.nodeName).toSet
+  /** set of jdbc worker hosts, in (host, port) form */
+  val jdbcWorkerHosts: Set[(String, Int)] = placements.map(p => (p.nodeName, p.nodePort)).toSet
 
   // Needed for hashing
   // Not sure whether a threadlocal for this is faster than just allocating a new one each time

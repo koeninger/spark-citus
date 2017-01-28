@@ -15,5 +15,7 @@ libraryDependencies ++= Seq(
   "org.apache.spark" %% "spark-network-shuffle" % sparkVersion % "provided",
   ("org.scalikejdbc" %% "scalikejdbc" % "2.2.1").
     exclude("org.slf4j", "slf4j-api"),
+  ("org.postgresql" % "postgresql" % "9.3-1101-jdbc4").
+    exclude("org.slf4j", "slf4j-api"),
   "org.scalatest" %% "scalatest" % "2.2.2" % "test"
 )
