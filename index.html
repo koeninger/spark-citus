@@ -28,6 +28,23 @@
         margin: 0 0 12px 0;  
       }
       .remark-code, .remark-inline-code { font-family: 'Ubuntu Mono'; }
+      @page {
+      /* for 16:9 */
+      /* size: 1210px 681px; */
+      /* for 4:3 */
+      size: 908px 681px;
+      margin: 0;
+      }
+
+      @media print {
+      .remark-slide-scaler {
+      width: 100% !important;
+      height: 100% !important;
+      transform: scale(1) !important;
+      top: 0 !important;
+      left: 0 !important;
+      }
+      }
     </style>
   </head>
   <body>
@@ -264,8 +281,8 @@ ERROR:  cannot use real time executor with repartition jobs
 HINT:  Set citus.task_executor_type to "task-tracker".
 
 master# SET citus.task_executor_type = 'task-tracker';
-master# select c.ad_id, max(c.price * d.amt) from clicks c inner join discounts d on c.date = d.date group by 1 order by 2 desc limit 1;
-
+master# select c.ad_id, max(c.price * d.amt) from clicks c
+   inner join discounts d on c.date = d.date group by 1 order by 2 desc limit 1;
 ad_id |                max
 -------+-----------------------------------
 587 | 67.887149187736200000000000000000
@@ -342,7 +359,7 @@ def shardPlacement(partitionId: Int): ShardPlacement
 * Citus uses Postgres hash (**hashfunc.c**) based on Jenkins' 2006 hash
 * Min / max hash values for a given shard are in **pg_dist_shard** table
 * Worker nodes for a given shard are in **pg_dist_shard_placement** table
-* Idea is to query once at partitioner creation time, build a lookup array from hash bucket to shard placement
+* Idea is to query once at partitioner creation time, build a lookup array
 
 ---
 
@@ -387,7 +404,7 @@ myapp | impressions |    1 | impressions_102010 | 18000  -- behind
 myapp | impressions |    1 | impressions_102011 | 20001
 ```
 
-* In this case, a failure occurred before writes to **impressions_102010** finished, because its offsets are behind the others
+* In this case, a failure occurred before writes to **impressions_102010** finished
 * Restart Spark app from Kafka offset ranges
   * partition 0 offsets 19000 -> 20000
   * partition 1 offsets 18000 -> 20001
@@ -430,6 +447,9 @@ https://github.com/koeninger/spark-citus
     <script src="slides/remark-latest.min.js">
     </script>
     <script>
+      // for 16:9
+      //var slideshow = remark.create({ratio: "16:9"});
+      // for 4:3
       var slideshow = remark.create();
     </script>
   </body>
