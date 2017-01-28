@@ -105,7 +105,13 @@ class CitusPartitioner(placements: Array[ShardPlacement]) extends Partitioner {
 }
 
 object CitusPartitioner {
-  /** @param session an open scalikejdbc session to the Citus master node */
+  /**
+   * Convenience constructor for a CitusPartitioner.
+   * This is using scalikejdbc library for db interaction.
+   * If you want to use some other library, or raw jdbc, submit a PR :)
+   * You can also just do the query yourself and call new CitusPartitioner.
+   * @param session an open scalikejdbc session to the Citus master node
+   */
   def apply(tables: Seq[String])(implicit session: DBSession): CitusPartitioner = {
     val placements = sql"""
 select
