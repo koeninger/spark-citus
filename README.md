@@ -1,6 +1,6 @@
 Utilities for integrating [Apache Spark](http://spark.apache.org) with [Citus](https://www.citusdata.com/).  Not affiliated with or endorsed by either project.
 
-See [slides](https://koeninger.github.io/spark-citus) for background info.
+See [slides](https://koeninger.github.io/spark-citus) or the [Spark Summit video](https://www.youtube.com/watch?v=oW_lNhzEotU) for background info.
 
 See [CitusPartitionerExample](https://github.com/koeninger/spark-citus/blob/master/src/test/scala/org/koeninger/spark/citus/CitusPartitionerExample.scala) for usage.
 
